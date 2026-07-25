@@ -1,0 +1,13 @@
+.git
+.Rproj.user
+.Rhistory
+.RData
+Outputs
+Parker_birds.html
+Parker_birds_files
+*.Rproj
+deploy
+README.md
+.dockerignore
+Dockerfile
+docker-compose.yml

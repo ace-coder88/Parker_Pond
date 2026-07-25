@@ -1,0 +1,10 @@
+services:
+  parker-birds:
+    build: .
+    image: parker-birds:latest
+    ports:
+      - "3838:3838"
+    volumes:
+      # Mount host data so new monthly Excel files appear without rebuilding
+      - ./data:/app/data:ro
+    restart: unless-stopped
