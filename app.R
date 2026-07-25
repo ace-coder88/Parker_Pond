@@ -97,12 +97,13 @@ ui <- fluidPage(
     sidebarPanel(
       class = "sidebar-panel",
       width = 3,
-      radioButtons(
+      selectInput(
         "preset",
         "Preset",
         choices = c("All birds" = "all", "Owls" = "owls", "Custom species" = "custom"),
         selected = "all"
       ),
+      helpText("Top species presets update when data is reloaded."),
       conditionalPanel(
         condition = "input.preset == 'custom'",
         selectizeInput(
@@ -159,6 +160,23 @@ server <- function(input, output, session) {
     species <- sort(unique(birds$Species))
     updateSelectizeInput(session, "species", choices = species, server = TRUE)
 
+    top10 <- birds %>%
+      group_by(Species) %>%
+      summarise(Calls = sum(Count, na.rm = TRUE), .groups = "drop") %>%
+      arrange(desc(Calls)) %>%
+      slice_head(n = 10) %>%
+      pull(Species)
+
+    preset_choices <- c(
+      "All birds" = "all",
+      "Owls" = "owls",
+      setNames(top10, top10),
+      "Custom species" = "custom"
+    )
+    current <- isolate(input$preset)
+    selected <- if (!is.null(current) && current %in% preset_choices) current else "all"
+    updateSelectInput(session, "preset", choices = preset_choices, selected = selected)
+
     date_min <- min(birds$date_col)
     date_max <- max(birds$date_col)
     updateDateRangeInput(session, "date_range", start = date_min, end = date_max, min = date_min, max = date_max)
@@ -183,11 +201,14 @@ server <- function(input, output, session) {
 
     out <- birds
 
-    if (identical(input$preset, "owls")) {
+    preset <- input$preset
+    if (identical(preset, "owls")) {
       out <- out %>% filter(grepl("Owl", Species, ignore.case = TRUE))
-    } else if (identical(input$preset, "custom")) {
+    } else if (identical(preset, "custom")) {
       req(length(input$species) > 0)
       out <- out %>% filter(Species %in% input$species)
+    } else if (!identical(preset, "all") && !is.null(preset) && nzchar(preset)) {
+      out <- out %>% filter(Species == preset)
     }
 
     if (!is.null(input$date_range) && length(input$date_range) == 2 &&
@@ -209,17 +230,20 @@ server <- function(input, output, session) {
   })
 
   heatmap_title <- reactive({
-    if (identical(input$preset, "owls")) {
+    preset <- input$preset
+    if (identical(preset, "owls")) {
       "Owl calls by date and hour"
-    } else if (identical(input$preset, "custom")) {
+    } else if (identical(preset, "custom")) {
       n <- length(input$species)
       if (n == 1) {
         paste0(input$species[[1]], " calls by date and hour")
       } else {
         paste0(n, " selected species — calls by date and hour")
       }
-    } else {
+    } else if (identical(preset, "all") || is.null(preset)) {
       "All bird calls by date and hour"
+    } else {
+      paste0(preset, " calls by date and hour")
     }
   })
 
