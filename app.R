@@ -6,6 +6,7 @@ library(httr2)
 library(jsonlite)
 
 source(file.path("R", "haikubox.R"))
+source(file.path("R", "sun.R"))
 
 data_dir <- Sys.getenv("PARKER_DATA_DIR", unset = "data")
 live_refresh_ms <- as.integer(Sys.getenv("HAIKUBOX_REFRESH_MS", unset = "600000"))
@@ -60,7 +61,15 @@ aggregate_heatmap <- function(df) {
     filter(!is.na(time_col))
 }
 
-plot_heatmap <- function(agg, title) {
+plot_heatmap <- function(
+    agg,
+    title,
+    palette = "magma",
+    brightness = 0,
+    reverse = FALSE,
+    show_sun = TRUE,
+    sun_curves = NULL
+) {
   if (nrow(agg) == 0) {
     return(
       ggplot() +
@@ -69,17 +78,59 @@ plot_heatmap <- function(agg, title) {
     )
   }
 
-  ggplot(agg, aes(x = date_col, y = time_col, fill = Count)) +
+  # brightness: -1 = darker (use deeper end of scale), +1 = brighter (crop dark end)
+  brightness <- max(-1, min(1, as.numeric(brightness)))
+  if (brightness >= 0) {
+    begin <- brightness * 0.45
+    end <- 1
+  } else {
+    begin <- 0
+    end <- 1 + brightness * 0.45
+  }
+
+  p <- ggplot(agg, aes(x = date_col, y = time_col, fill = Count)) +
     geom_raster(interpolate = FALSE) +
-    scale_fill_viridis_c(option = "magma", name = "# Calls") +
+    scale_fill_viridis_c(
+      option = palette,
+      name = "# Calls",
+      begin = begin,
+      end = end,
+      direction = if (isTRUE(reverse)) -1 else 1
+    ) +
     scale_x_date(date_breaks = "1 month", date_labels = "%b") +
-    scale_y_continuous(breaks = seq(0, 23, by = 3)) +
+    scale_y_continuous(breaks = seq(0, 23, by = 3), limits = c(0, 23), expand = c(0, 0)) +
     labs(y = "Time of Day", title = title) +
     theme_minimal(base_size = 13) +
     theme(
       axis.title.x = element_blank(),
       panel.grid = element_blank()
     )
+
+  if (isTRUE(show_sun) && !is.null(sun_curves) && nrow(sun_curves) > 0) {
+    # Sunrise near bottom of y-axis (early hours); sunset near top (evening)
+    p <- p +
+      geom_line(
+        data = sun_curves,
+        aes(x = date, y = sunrise_hour, color = "Sunrise", group = 1),
+        inherit.aes = FALSE,
+        linewidth = 0.7,
+        alpha = 0.95
+      ) +
+      geom_line(
+        data = sun_curves,
+        aes(x = date, y = sunset_hour, color = "Sunset", group = 1),
+        inherit.aes = FALSE,
+        linewidth = 0.7,
+        alpha = 0.95
+      ) +
+      scale_color_manual(
+        name = NULL,
+        values = c(Sunrise = "#FFE082", Sunset = "#80DEEA")
+      ) +
+      guides(color = guide_legend(override.aes = list(linewidth = 1.2)))
+  }
+
+  p
 }
 
 ui <- fluidPage(
@@ -148,6 +199,34 @@ ui <- fluidPage(
         value = 0,
         step = 0.01
       ),
+      hr(),
+      selectInput(
+        "palette",
+        "Color palette",
+        choices = c(
+          "Magma" = "magma",
+          "Inferno" = "inferno",
+          "Plasma" = "plasma",
+          "Viridis" = "viridis",
+          "Cividis" = "cividis",
+          "Rocket" = "rocket",
+          "Mako" = "mako",
+          "Turbo" = "turbo"
+        ),
+        selected = "magma"
+      ),
+      sliderInput(
+        "brightness",
+        "Brightness",
+        min = -1,
+        max = 1,
+        value = 0,
+        step = 0.05,
+        ticks = FALSE
+      ),
+      checkboxInput("reverse_palette", "Reverse palette", value = FALSE),
+      checkboxInput("show_sun", "Show sunrise / sunset", value = TRUE),
+      helpText("Sun curves use Tuxedo Rock, NY coordinates (override with HAIKUBOX_LAT / HAIKUBOX_LON)."),
       actionButton("reload", "Reload Excel data", class = "btn-primary", width = "100%"),
       br(), br(),
       actionButton("refresh_live", "Refresh live data", width = "100%"),
@@ -161,14 +240,22 @@ ui <- fluidPage(
         h4("Summary"),
         verbatimTextOutput("summary", placeholder = TRUE)
       ),
-      div(
-        class = "live-box",
-        h4("Live now (last 24h API)"),
-        tableOutput("live_now")
-      ),
       plotOutput("heatmap", height = "520px"),
-      h4("Top species in selection"),
-      tableOutput("top_species")
+      fluidRow(
+        column(
+          width = 6,
+          h4("Top species in selection"),
+          tableOutput("top_species")
+        ),
+        column(
+          width = 6,
+          div(
+            class = "live-box",
+            h4("Live now (last 24h API)"),
+            tableOutput("live_now")
+          )
+        )
+      )
     )
   )
 )
@@ -424,7 +511,24 @@ server <- function(input, output, session) {
   output$heatmap <- renderPlot({
     df <- filtered()
     agg <- aggregate_heatmap(df)
-    plot_heatmap(agg, heatmap_title())
+    sun <- NULL
+    if (isTRUE(input$show_sun) && nrow(agg) > 0) {
+      sun <- sun_curves_for_dates(
+        agg$date_col,
+        lat = haikubox_lat(),
+        lon = haikubox_lon(),
+        tz = haikubox_tz()
+      )
+    }
+    plot_heatmap(
+      agg,
+      heatmap_title(),
+      palette = input$palette %||% "magma",
+      brightness = input$brightness %||% 0,
+      reverse = isTRUE(input$reverse_palette),
+      show_sun = isTRUE(input$show_sun),
+      sun_curves = sun
+    )
   })
 
   output$top_species <- renderTable({
