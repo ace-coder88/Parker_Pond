@@ -226,7 +226,7 @@ ui <- fluidPage(
       ),
       checkboxInput("reverse_palette", "Reverse palette", value = FALSE),
       checkboxInput("show_sun", "Show sunrise / sunset", value = TRUE),
-      helpText("Sun curves use Tuxedo Rock, NY coordinates (override with HAIKUBOX_LAT / HAIKUBOX_LON)."),
+      helpText("Sun curves use Mount Vernon, ME coordinates (override with HAIKUBOX_LAT / HAIKUBOX_LON)."),
       actionButton("reload", "Reload Excel data", class = "btn-primary", width = "100%"),
       br(), br(),
       actionButton("refresh_live", "Refresh live data", width = "100%"),

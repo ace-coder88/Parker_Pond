@@ -8,8 +8,8 @@ services:
       PARKER_DATA_DIR: /app/data
       HAIKUBOX_SERIAL: "64E8334476B0"
       HAIKUBOX_TZ: America/New_York
-      HAIKUBOX_LAT: "41.1915"
-      HAIKUBOX_LON: "-74.1171"
+      HAIKUBOX_LAT: "44.5012"
+      HAIKUBOX_LON: "-69.9876"
       HAIKUBOX_REFRESH_MS: "600000"
     volumes:
       # Excel history + writable API cache under data/cache/

@@ -1,12 +1,12 @@
 # Approximate sunrise/sunset (NOAA-style) as local decimal hours.
-# Defaults: Tuxedo Rock, NY (Haikubox site named in Parker_birds.qmd).
+# Defaults: Mount Vernon, ME (Haikubox location).
 
 haikubox_lat <- function() {
-  as.numeric(Sys.getenv("HAIKUBOX_LAT", unset = "41.1915"))
+  as.numeric(Sys.getenv("HAIKUBOX_LAT", unset = "44.5012"))
 }
 
 haikubox_lon <- function() {
-  as.numeric(Sys.getenv("HAIKUBOX_LON", unset = "-74.1171"))
+  as.numeric(Sys.getenv("HAIKUBOX_LON", unset = "-69.9876"))
 }
 
 # Timezone offset from UTC in hours for a given date (handles DST).
