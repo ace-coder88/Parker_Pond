@@ -6,3 +6,7 @@ Parker_birds_files/
 .RData
 .Rproj.user/
 .DS_Store
+
+# Runtime Haikubox API cache (written by the Shiny app)
+data/cache/*
+!data/cache/.gitkeep

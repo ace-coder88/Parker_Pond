@@ -4,7 +4,12 @@ services:
     image: parker-birds:latest
     ports:
       - "3838:3838"
+    environment:
+      PARKER_DATA_DIR: /app/data
+      HAIKUBOX_SERIAL: "64E8334476B0"
+      HAIKUBOX_TZ: America/New_York
+      HAIKUBOX_REFRESH_MS: "600000"
     volumes:
-      # Mount host data so new monthly Excel files appear without rebuilding
-      - ./data:/app/data:ro
+      # Excel history + writable API cache under data/cache/
+      - ./data:/app/data:rw
     restart: unless-stopped

@@ -2,8 +2,13 @@ library(shiny)
 library(tidyverse)
 library(readxl)
 library(ggplot2)
+library(httr2)
+library(jsonlite)
+
+source(file.path("R", "haikubox.R"))
 
 data_dir <- Sys.getenv("PARKER_DATA_DIR", unset = "data")
+live_refresh_ms <- as.integer(Sys.getenv("HAIKUBOX_REFRESH_MS", unset = "600000"))
 
 load_birds <- function(dir = data_dir) {
   birdfiles <- list.files(dir, pattern = "\\.(xlsx|xls)$", full.names = TRUE)
@@ -78,6 +83,8 @@ ui <- fluidPage(
       .sidebar-panel { background: #fff; border: 1px solid #e6e1d9; border-radius: 8px; padding: 1rem; }
       .summary-box { background: #fff; border: 1px solid #e6e1d9; border-radius: 8px; padding: 0.85rem 1rem; margin-bottom: 1rem; }
       .summary-box h4 { margin-top: 0; }
+      .live-box { background: #fff; border: 1px solid #e6e1d9; border-radius: 8px; padding: 0.85rem 1rem; margin-bottom: 1rem; }
+      .live-box h4 { margin-top: 0; }
     "))
   ),
   div(
@@ -103,7 +110,7 @@ ui <- fluidPage(
         choices = c("All birds" = "all", "Owls" = "owls", "Custom species" = "custom"),
         selected = "all"
       ),
-      helpText("Top species presets update when data is reloaded."),
+      helpText("Top species presets update when Excel data is reloaded."),
       conditionalPanel(
         condition = "input.preset == 'custom'",
         selectizeInput(
@@ -132,9 +139,11 @@ ui <- fluidPage(
         value = 0,
         step = 0.01
       ),
-      actionButton("reload", "Reload data", class = "btn-primary", width = "100%"),
+      actionButton("reload", "Reload Excel data", class = "btn-primary", width = "100%"),
       br(), br(),
-      helpText("Drop new monthly Excel files into the data folder, then reload.")
+      actionButton("refresh_live", "Refresh live data", width = "100%"),
+      br(), br(),
+      helpText("Live detections refresh automatically about every 10 minutes from the public Haikubox API (no account key).")
     ),
     mainPanel(
       width = 9,
@@ -142,6 +151,11 @@ ui <- fluidPage(
         class = "summary-box",
         h4("Summary"),
         verbatimTextOutput("summary", placeholder = TRUE)
+      ),
+      div(
+        class = "live-box",
+        h4("Live now (last 24h API)"),
+        tableOutput("live_now")
       ),
       plotOutput("heatmap", height = "520px"),
       h4("Top species in selection"),
@@ -151,12 +165,11 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
-  birds_data <- reactiveVal(NULL)
+  excel_data <- reactiveVal(NULL)
+  live_data <- reactiveVal(empty_detections_df())
+  live_meta <- reactiveVal(list(fetched_at = NA, source = "none", error = NULL))
 
-  refresh_data <- function() {
-    birds <- load_birds()
-    birds_data(birds)
-
+  update_presets_from <- function(birds) {
     species <- sort(unique(birds$Species))
     updateSelectizeInput(session, "species", choices = species, server = TRUE)
 
@@ -183,16 +196,71 @@ server <- function(input, output, session) {
 
     score_max <- suppressWarnings(max(birds$Score, na.rm = TRUE))
     if (!is.finite(score_max) || score_max <= 0) score_max <- 1
-    updateSliderInput(session, "min_score", max = score_max, value = 0)
+    updateSliderInput(session, "min_score", max = score_max, value = isolate(input$min_score) %||% 0)
   }
 
+  refresh_excel <- function() {
+    birds <- load_birds()
+    excel_data(birds)
+    update_presets_from(merge_excel_and_live(birds, live_data()))
+  }
+
+  refresh_live <- function(notify = FALSE) {
+    result <- refresh_live_detections(
+      serial = haikubox_serial(),
+      hours = 24L,
+      cache_path = haikubox_cache_path(data_dir),
+      tz = haikubox_tz()
+    )
+    live_data(result$df)
+    live_meta(list(
+      fetched_at = result$fetched_at,
+      source = result$source,
+      error = result$error
+    ))
+
+    excel <- excel_data()
+    if (!is.null(excel)) {
+      update_presets_from(merge_excel_and_live(excel, result$df))
+    }
+
+    if (notify) {
+      if (!is.null(result$error) && identical(result$source, "none")) {
+        showNotification(paste("Live refresh failed:", result$error), type = "error")
+      } else if (!is.null(result$error) && identical(result$source, "cache")) {
+        showNotification("API unreachable; showing cached live detections.", type = "warning")
+      } else {
+        showNotification(
+          paste0("Live data refreshed (", nrow(result$df), " detections)"),
+          type = "message"
+        )
+      }
+    }
+  }
+
+  birds_data <- reactive({
+    excel <- excel_data()
+    req(excel)
+    merge_excel_and_live(excel, live_data())
+  })
+
   observe({
-    refresh_data()
+    refresh_excel()
+    refresh_live(notify = FALSE)
+  })
+
+  observe({
+    invalidateLater(live_refresh_ms)
+    refresh_live(notify = FALSE)
   })
 
   observeEvent(input$reload, {
-    refresh_data()
-    showNotification("Data reloaded", type = "message")
+    refresh_excel()
+    showNotification("Excel data reloaded", type = "message")
+  })
+
+  observeEvent(input$refresh_live, {
+    refresh_live(notify = TRUE)
   })
 
   filtered <- reactive({
@@ -223,7 +291,8 @@ server <- function(input, output, session) {
     }
 
     if (!is.null(input$min_score) && input$min_score > 0) {
-      out <- out %>% filter(!is.na(Score), Score >= input$min_score)
+      # Keep API rows (Score NA) so live detections still appear when filtering scores
+      out <- out %>% filter(is.na(Score) | Score >= input$min_score)
     }
 
     out
@@ -250,10 +319,28 @@ server <- function(input, output, session) {
   output$summary <- renderText({
     df <- filtered()
     birds <- birds_data()
+    meta <- live_meta()
     req(birds)
 
+    sync_line <- if (is.na(meta$fetched_at)) {
+      "Last API sync: never"
+    } else {
+      paste0(
+        "Last API sync: ", format(meta$fetched_at, "%Y-%m-%d %H:%M:%S %Z"),
+        " (", meta$source, ")"
+      )
+    }
+
+    err_line <- if (!is.null(meta$error) && identical(meta$source, "cache")) {
+      paste0("\nAPI note: ", meta$error, " (using cache)")
+    } else if (!is.null(meta$error) && identical(meta$source, "none")) {
+      paste0("\nAPI note: ", meta$error)
+    } else {
+      ""
+    }
+
     if (nrow(df) == 0) {
-      return("No rows match the current filters.")
+      return(paste0("No rows match the current filters.\n", sync_line, err_line))
     }
 
     paste0(
@@ -261,10 +348,32 @@ server <- function(input, output, session) {
       "Detections (rows): ", format(nrow(df), big.mark = ","), "\n",
       "Species: ", n_distinct(df$Species), "\n",
       "Date span: ", as.character(min(df$date_col)), " to ", as.character(max(df$date_col)), "\n",
-      "Loaded from disk: ", format(nrow(birds), big.mark = ","), " rows / ",
-      n_distinct(birds$Species), " species"
+      "Merged rows: ", format(nrow(birds), big.mark = ","), " / ",
+      n_distinct(birds$Species), " species\n",
+      "Live API detections: ", format(nrow(live_data()), big.mark = ","), "\n",
+      sync_line,
+      err_line
     )
   })
+
+  output$live_now <- renderTable({
+    live <- live_data()
+    if (nrow(live) == 0) {
+      return(tibble(Species = character(), Local_time = character(), Audio = character()))
+    }
+
+    live %>%
+      slice_head(n = 20) %>%
+      transmute(
+        Species,
+        Local_time = format(datetime, "%Y-%m-%d %H:%M:%S"),
+        Audio = ifelse(
+          !is.na(wav) & nzchar(wav),
+          paste0("<a href=\"", wav, "\" target=\"_blank\" rel=\"noopener noreferrer\">listen</a>"),
+          ""
+        )
+      )
+  }, sanitize.text.function = identity, striped = TRUE, hover = TRUE, bordered = TRUE)
 
   output$heatmap <- renderPlot({
     df <- filtered()
