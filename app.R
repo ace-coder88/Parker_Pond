@@ -35,6 +35,15 @@ load_birds <- function(dir = data_dir) {
     )
 }
 
+# Load Excel once at process start (not per browser session) to avoid memory spikes / OOM → 502
+excel_birds_global <- tryCatch(
+  load_birds(data_dir),
+  error = function(e) {
+    warning("Failed to load Excel at startup: ", conditionMessage(e))
+    NULL
+  }
+)
+
 aggregate_heatmap <- function(df) {
   if (nrow(df) == 0) {
     return(tibble(date_col = as.Date(character()), time_col = numeric(), Count = numeric()))
@@ -61,7 +70,7 @@ plot_heatmap <- function(agg, title) {
   }
 
   ggplot(agg, aes(x = date_col, y = time_col, fill = Count)) +
-    geom_raster(interpolate = TRUE) +
+    geom_raster(interpolate = FALSE) +
     scale_fill_viridis_c(option = "magma", name = "# Calls") +
     scale_x_date(date_breaks = "1 month", date_labels = "%b") +
     scale_y_continuous(breaks = seq(0, 23, by = 3)) +
@@ -165,11 +174,15 @@ ui <- fluidPage(
 )
 
 server <- function(input, output, session) {
-  excel_data <- reactiveVal(NULL)
+  excel_data <- reactiveVal(excel_birds_global)
   live_data <- reactiveVal(empty_detections_df())
   live_meta <- reactiveVal(list(fetched_at = NA, source = "none", error = NULL))
 
   update_presets_from <- function(birds) {
+    if (is.null(birds) || nrow(birds) == 0) {
+      return(invisible(NULL))
+    }
+
     species <- sort(unique(birds$Species))
     updateSelectizeInput(session, "species", choices = species, server = TRUE)
 
@@ -201,17 +214,28 @@ server <- function(input, output, session) {
 
   refresh_excel <- function() {
     birds <- load_birds()
+    excel_birds_global <<- birds
     excel_data(birds)
     update_presets_from(merge_excel_and_live(birds, live_data()))
   }
 
   refresh_live <- function(notify = FALSE, network = TRUE) {
-    result <- refresh_live_detections(
-      serial = haikubox_serial(),
-      hours = 24L,
-      cache_path = haikubox_cache_path(data_dir),
-      tz = haikubox_tz(),
-      network = network
+    result <- tryCatch(
+      refresh_live_detections(
+        serial = haikubox_serial(),
+        hours = 24L,
+        cache_path = haikubox_cache_path(data_dir),
+        tz = haikubox_tz(),
+        network = network
+      ),
+      error = function(e) {
+        list(
+          df = empty_detections_df(),
+          fetched_at = NA,
+          source = "none",
+          error = conditionMessage(e)
+        )
+      }
     )
     live_data(result$df)
     live_meta(list(
@@ -219,12 +243,8 @@ server <- function(input, output, session) {
       source = result$source,
       error = result$error
     ))
-
-    excel <- excel_data()
-    if (!is.null(excel) && isTRUE(network)) {
-      # Avoid heavy preset rebuild on cache-only seed
-      update_presets_from(merge_excel_and_live(excel, result$df))
-    }
+    # Do not rebuild presets/date inputs on live refresh — that re-renders the whole UI
+    # and can OOM the container (nginx then returns 502).
 
     if (notify) {
       if (!is.null(result$error) && identical(result$source, "none")) {
@@ -246,15 +266,23 @@ server <- function(input, output, session) {
     merge_excel_and_live(excel, live_data())
   })
 
-  # Fast path: Excel + optional disk cache so the UI can render without waiting on the API
+  # Seed session from in-memory Excel + disk cache (no per-session Excel reload)
   observe({
-    refresh_excel()
+    excel <- excel_data()
+    if (!is.null(excel)) {
+      update_presets_from(excel)
+    }
     refresh_live(notify = FALSE, network = FALSE)
   })
 
   # Network fetch after first paint; then every ~10 minutes
   session$onFlushed(once = TRUE, function() {
-    refresh_live(notify = FALSE, network = TRUE)
+    tryCatch(
+      refresh_live(notify = FALSE, network = TRUE),
+      error = function(e) {
+        message("Live refresh after flush failed: ", conditionMessage(e))
+      }
+    )
   })
 
   skip_first_timer <- TRUE
@@ -264,7 +292,12 @@ server <- function(input, output, session) {
       skip_first_timer <<- FALSE
       return()
     }
-    refresh_live(notify = FALSE, network = TRUE)
+    tryCatch(
+      refresh_live(notify = FALSE, network = TRUE),
+      error = function(e) {
+        message("Scheduled live refresh failed: ", conditionMessage(e))
+      }
+    )
   })
 
   observeEvent(input$reload, {
