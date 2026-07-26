@@ -7,6 +7,7 @@ library(jsonlite)
 
 source(file.path("R", "haikubox.R"))
 source(file.path("R", "sun.R"))
+source(file.path("R", "species_groups.R"))
 
 data_dir <- Sys.getenv("PARKER_DATA_DIR", unset = "data")
 live_refresh_ms <- as.integer(Sys.getenv("HAIKUBOX_REFRESH_MS", unset = "600000"))
@@ -145,6 +146,19 @@ ui <- fluidPage(
       .summary-box h4 { margin-top: 0; }
       .live-box { background: #fff; border: 1px solid #e6e1d9; border-radius: 8px; padding: 0.85rem 1rem; margin-bottom: 1rem; }
       .live-box h4 { margin-top: 0; }
+      .species-group .shiny-options-group {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        column-gap: 0.75rem;
+        row-gap: 0.2rem;
+        align-items: start;
+      }
+      .species-group .radio { margin-top: 0 !important; margin-bottom: 0; }
+      .species-group .radio > label {
+        font-weight: normal;
+        padding-left: 1.35em;
+        white-space: nowrap;
+      }
     "))
   ),
   div(
@@ -164,23 +178,23 @@ ui <- fluidPage(
     sidebarPanel(
       class = "sidebar-panel",
       width = 3,
-      selectInput(
-        "preset",
-        "Preset",
-        choices = c("All birds" = "all", "Owls" = "owls", "Custom species" = "custom"),
-        selected = "all"
+      selectizeInput(
+        "species",
+        "Species",
+        choices = NULL,
+        multiple = TRUE,
+        options = list(placeholder = "Search species… (empty = all birds)")
       ),
-      helpText("Top species presets update when Excel data is reloaded."),
-      conditionalPanel(
-        condition = "input.preset == 'custom'",
-        selectizeInput(
-          "species",
-          "Species",
-          choices = NULL,
-          multiple = TRUE,
-          options = list(placeholder = "Search species…")
+      div(
+        class = "species-group",
+        radioButtons(
+          "species_group",
+          "Species group",
+          choices = species_group_choices,
+          selected = "all"
         )
       ),
+      helpText("Group radios fill the species box with matching names from the loaded data."),
       dateRangeInput("date_range", "Date range"),
       sliderInput(
         "hour_range",
@@ -264,31 +278,17 @@ server <- function(input, output, session) {
   excel_data <- reactiveVal(excel_birds_global)
   live_data <- reactiveVal(empty_detections_df())
   live_meta <- reactiveVal(list(fetched_at = NA, source = "none", error = NULL))
+  available_species <- reactiveVal(character(0))
+  syncing_species_group <- reactiveVal(FALSE)
 
-  update_presets_from <- function(birds) {
+  update_filters_from <- function(birds) {
     if (is.null(birds) || nrow(birds) == 0) {
       return(invisible(NULL))
     }
 
     species <- sort(unique(birds$Species))
+    available_species(species)
     updateSelectizeInput(session, "species", choices = species, server = TRUE)
-
-    top10 <- birds %>%
-      group_by(Species) %>%
-      summarise(Calls = sum(Count, na.rm = TRUE), .groups = "drop") %>%
-      arrange(desc(Calls)) %>%
-      slice_head(n = 10) %>%
-      pull(Species)
-
-    preset_choices <- c(
-      "All birds" = "all",
-      "Owls" = "owls",
-      setNames(top10, top10),
-      "Custom species" = "custom"
-    )
-    current <- isolate(input$preset)
-    selected <- if (!is.null(current) && current %in% preset_choices) current else "all"
-    updateSelectInput(session, "preset", choices = preset_choices, selected = selected)
 
     date_min <- min(birds$date_col)
     date_max <- max(birds$date_col)
@@ -303,7 +303,7 @@ server <- function(input, output, session) {
     birds <- load_birds()
     excel_birds_global <<- birds
     excel_data(birds)
-    update_presets_from(merge_excel_and_live(birds, live_data()))
+    update_filters_from(merge_excel_and_live(birds, live_data()))
   }
 
   refresh_live <- function(notify = FALSE, network = TRUE) {
@@ -330,7 +330,7 @@ server <- function(input, output, session) {
       source = result$source,
       error = result$error
     ))
-    # Do not rebuild presets/date inputs on live refresh — that re-renders the whole UI
+    # Do not rebuild species/date inputs on live refresh — that re-renders the whole UI
     # and can OOM the container (nginx then returns 502).
 
     if (notify) {
@@ -357,7 +357,7 @@ server <- function(input, output, session) {
   observe({
     excel <- excel_data()
     if (!is.null(excel)) {
-      update_presets_from(excel)
+      update_filters_from(excel)
     }
     refresh_live(notify = FALSE, network = FALSE)
   })
@@ -396,20 +396,48 @@ server <- function(input, output, session) {
     refresh_live(notify = TRUE, network = TRUE)
   })
 
+  observeEvent(input$species_group, {
+    group <- input$species_group
+    if (identical(group, "custom")) {
+      return()
+    }
+
+    selected <- if (identical(group, "all")) {
+      character(0)
+    } else {
+      match_species_group(available_species(), group)
+    }
+
+    syncing_species_group(TRUE)
+    updateSelectizeInput(
+      session,
+      "species",
+      choices = available_species(),
+      selected = selected,
+      server = TRUE
+    )
+  }, ignoreInit = TRUE)
+
+  observeEvent(input$species, {
+    if (isTRUE(syncing_species_group())) {
+      syncing_species_group(FALSE)
+      return()
+    }
+
+    inferred <- infer_species_group(input$species, available_species())
+    if (!identical(isolate(input$species_group), inferred)) {
+      updateRadioButtons(session, "species_group", selected = inferred)
+    }
+  }, ignoreNULL = FALSE)
+
   filtered <- reactive({
     birds <- birds_data()
     req(birds)
 
     out <- birds
 
-    preset <- input$preset
-    if (identical(preset, "owls")) {
-      out <- out %>% filter(grepl("Owl", Species, ignore.case = TRUE))
-    } else if (identical(preset, "custom")) {
-      req(length(input$species) > 0)
+    if (!is.null(input$species) && length(input$species) > 0) {
       out <- out %>% filter(Species %in% input$species)
-    } else if (!identical(preset, "all") && !is.null(preset) && nzchar(preset)) {
-      out <- out %>% filter(Species == preset)
     }
 
     if (!is.null(input$date_range) && length(input$date_range) == 2 &&
@@ -432,20 +460,20 @@ server <- function(input, output, session) {
   })
 
   heatmap_title <- reactive({
-    preset <- input$preset
-    if (identical(preset, "owls")) {
-      "Owl calls by date and hour"
-    } else if (identical(preset, "custom")) {
+    group <- input$species_group
+    if (is.null(group) || identical(group, "all")) {
+      "All bird calls by date and hour"
+    } else if (identical(group, "custom")) {
       n <- length(input$species)
-      if (n == 1) {
+      if (n == 0) {
+        "All bird calls by date and hour"
+      } else if (n == 1) {
         paste0(input$species[[1]], " calls by date and hour")
       } else {
         paste0(n, " selected species — calls by date and hour")
       }
-    } else if (identical(preset, "all") || is.null(preset)) {
-      "All bird calls by date and hour"
     } else {
-      paste0(preset, " calls by date and hour")
+      paste0(species_group_label(group), " — calls by date and hour")
     }
   })
 

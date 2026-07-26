@@ -45,7 +45,7 @@ stopifnot(nrow(birds) > 0)
 stopifnot(n_distinct(birds$Species) > 1)
 
 all_agg <- aggregate_heatmap(birds)
-owl_agg <- aggregate_heatmap(filter(birds, grepl("Owl", Species)))
+owl_agg <- aggregate_heatmap(filter(birds, grepl("\\bOwl\\b", Species, perl = TRUE)))
 barred_agg <- aggregate_heatmap(filter(birds, Species == "Barred Owl"))
 
 stopifnot(sum(all_agg$Count) > 0)
