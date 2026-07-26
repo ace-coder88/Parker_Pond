@@ -44,8 +44,8 @@ fetch_detections_raw <- function(serial = haikubox_serial(), hours = 24L) {
   )
 
   req <- httr2::request(url) |>
-    httr2::req_timeout(30) |>
-    httr2::req_retry(max_tries = 3, backoff = ~1) |>
+    httr2::req_timeout(8) |>
+    httr2::req_retry(max_tries = 2) |>
     httr2::req_error(is_error = \(resp) FALSE)
 
   resp <- httr2::req_perform(req)
@@ -125,16 +125,43 @@ normalize_detections <- function(payload, tz = haikubox_tz()) {
 }
 
 # Fetch API (or fall back to cache). Returns list(df, fetched_at, source, error).
+# Set network=FALSE to seed from cache only (instant; used at UI startup).
 refresh_live_detections <- function(
     serial = haikubox_serial(),
     hours = 24L,
     cache_path = haikubox_cache_path(),
-    tz = haikubox_tz()
+    tz = haikubox_tz(),
+    network = TRUE
 ) {
   error_msg <- NULL
   payload <- NULL
   source <- "api"
   fetched_at <- Sys.time()
+
+  cached <- read_detections_cache(cache_path)
+
+  if (!isTRUE(network)) {
+    if (!is.null(cached) && !is.null(cached$payload)) {
+      fetched_at <- suppressWarnings(
+        lubridate::ymd_hms(cached$fetched_at, quiet = TRUE)
+      )
+      if (length(fetched_at) != 1 || is.na(fetched_at)) {
+        fetched_at <- file.mtime(cache_path)
+      }
+      return(list(
+        df = normalize_detections(cached$payload, tz = tz),
+        fetched_at = fetched_at,
+        source = "cache",
+        error = NULL
+      ))
+    }
+    return(list(
+      df = empty_detections_df(),
+      fetched_at = NA,
+      source = "none",
+      error = NULL
+    ))
+  }
 
   tryCatch(
     {
@@ -143,14 +170,15 @@ refresh_live_detections <- function(
     },
     error = function(e) {
       error_msg <<- conditionMessage(e)
-      cached <- read_detections_cache(cache_path)
       if (!is.null(cached) && !is.null(cached$payload)) {
         payload <<- cached$payload
         source <<- "cache"
         fetched_at <<- suppressWarnings(
           lubridate::ymd_hms(cached$fetched_at, quiet = TRUE)
         )
-        if (is.na(fetched_at)) fetched_at <<- file.mtime(cache_path)
+        if (length(fetched_at) != 1 || is.na(fetched_at)) {
+          fetched_at <<- file.mtime(cache_path)
+        }
       } else {
         payload <<- NULL
       }

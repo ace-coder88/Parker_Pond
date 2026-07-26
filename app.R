@@ -205,12 +205,13 @@ server <- function(input, output, session) {
     update_presets_from(merge_excel_and_live(birds, live_data()))
   }
 
-  refresh_live <- function(notify = FALSE) {
+  refresh_live <- function(notify = FALSE, network = TRUE) {
     result <- refresh_live_detections(
       serial = haikubox_serial(),
       hours = 24L,
       cache_path = haikubox_cache_path(data_dir),
-      tz = haikubox_tz()
+      tz = haikubox_tz(),
+      network = network
     )
     live_data(result$df)
     live_meta(list(
@@ -220,7 +221,8 @@ server <- function(input, output, session) {
     ))
 
     excel <- excel_data()
-    if (!is.null(excel)) {
+    if (!is.null(excel) && isTRUE(network)) {
+      # Avoid heavy preset rebuild on cache-only seed
       update_presets_from(merge_excel_and_live(excel, result$df))
     }
 
@@ -244,14 +246,25 @@ server <- function(input, output, session) {
     merge_excel_and_live(excel, live_data())
   })
 
+  # Fast path: Excel + optional disk cache so the UI can render without waiting on the API
   observe({
     refresh_excel()
-    refresh_live(notify = FALSE)
+    refresh_live(notify = FALSE, network = FALSE)
   })
 
+  # Network fetch after first paint; then every ~10 minutes
+  session$onFlushed(once = TRUE, function() {
+    refresh_live(notify = FALSE, network = TRUE)
+  })
+
+  skip_first_timer <- TRUE
   observe({
     invalidateLater(live_refresh_ms)
-    refresh_live(notify = FALSE)
+    if (isTRUE(skip_first_timer)) {
+      skip_first_timer <<- FALSE
+      return()
+    }
+    refresh_live(notify = FALSE, network = TRUE)
   })
 
   observeEvent(input$reload, {
@@ -260,7 +273,7 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$refresh_live, {
-    refresh_live(notify = TRUE)
+    refresh_live(notify = TRUE, network = TRUE)
   })
 
   filtered <- reactive({
