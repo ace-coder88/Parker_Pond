@@ -6,7 +6,7 @@ services:
       - "3838:3838"
     environment:
       PARKER_DATA_DIR: /app/data
-      HAIKUBOX_SERIAL: "64E8334476B0"
+      HAIKUBOX_SERIAL: "ECDA3B96F3AC"
       HAIKUBOX_TZ: America/New_York
       HAIKUBOX_LAT: "44.5012"
       HAIKUBOX_LON: "-69.9876"

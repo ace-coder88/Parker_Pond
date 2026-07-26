@@ -1,6 +1,6 @@
 # Parker Birds — EC2 deployment
 
-Interactive Shiny dashboard for Haikubox detections at Tuxedo Rock.
+Interactive Shiny dashboard for Haikubox detections at Parker Pond, Mt. Vernon, ME.
 
 ## Local development
 
@@ -20,7 +20,7 @@ docker compose up --build
 
 The app merges monthly Excel files with the **public** Haikubox detections API (last 24 hours), cached under `data/cache/detections.json` and refreshed about every 10 minutes.
 
-- Serial (public, already on the listen URL): `64E8334476B0`
+- Serial (public, already on the listen URL): `ECDA3B96F3AC`
 - Env overrides: `HAIKUBOX_SERIAL`, `HAIKUBOX_TZ` (default `America/New_York`), `HAIKUBOX_REFRESH_MS`
 - **Do not commit account API keys** (e.g. `weft_…`). The public `/haikubox/<serial>/…` endpoints do not need them. If a key was shared in chat or email, rotate/revoke it in the Haikubox account.
 - EC2 needs outbound HTTPS to `api.haikubox.com` (and working DNS).

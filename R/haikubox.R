@@ -6,7 +6,7 @@
 }
 
 haikubox_serial <- function() {
-  Sys.getenv("HAIKUBOX_SERIAL", unset = "64E8334476B0")
+  Sys.getenv("HAIKUBOX_SERIAL", unset = "ECDA3B96F3AC")
 }
 
 haikubox_tz <- function() {
@@ -139,6 +139,10 @@ refresh_live_detections <- function(
   fetched_at <- Sys.time()
 
   cached <- read_detections_cache(cache_path)
+  if (!is.null(cached) && !identical(as.character(cached$serial %||% ""), as.character(serial))) {
+    # Stale cache from a different Haikubox — do not reuse
+    cached <- NULL
+  }
 
   if (!isTRUE(network)) {
     if (!is.null(cached) && !is.null(cached$payload)) {

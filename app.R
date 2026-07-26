@@ -165,9 +165,9 @@ ui <- fluidPage(
     class = "title-block",
     h1("Parker Birds"),
     p(
-      "Haikubox detections at Tuxedo Rock — ",
+      "Haikubox detections at Parker Pond, Mt. Vernon, ME — ",
       tags$a(
-        href = "https://birds.haikubox.com/listen/64E8334476B0",
+        href = "https://birds.haikubox.com/listen/ECDA3B96F3AC",
         target = "_blank",
         rel = "noopener noreferrer",
         "listen live"
