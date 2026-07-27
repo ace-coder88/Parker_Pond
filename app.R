@@ -211,7 +211,7 @@ ui <- fluidPage(
     class = "title-block",
     h1("Parker Birds"),
     p(
-      "Haikubox detections at Parker Pond, Mt. Vernon, ME — ",
+      "Haikubox detections at Parker Pond — ",
       tags$a(
         href = "https://birds.haikubox.com/listen/ECDA3B96F3AC",
         target = "_blank",
