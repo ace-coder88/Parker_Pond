@@ -55,6 +55,47 @@ sudo bash /opt/parker-birds/deploy/setup-ec2.sh
 sudo certbot --nginx -d birds.yourdomain.example
 ```
 
+### Auto-deploy (GitHub Actions → SSH)
+
+Pushes to `shiny-ec2-dashboard` on the fork trigger [`.github/workflows/deploy-ec2.yml`](../.github/workflows/deploy-ec2.yml), which SSHs into EC2 and runs [`deploy/update.sh`](update.sh) (`git pull` + `docker compose up -d --build`).
+
+**1. Deploy SSH key (on your laptop):**
+
+```bash
+ssh-keygen -t ed25519 -f parker-deploy -N "" -C "github-actions-parker-birds"
+```
+
+**2. On EC2** (as the SSH user, usually `ubuntu`):
+
+```bash
+# Allow GitHub Actions to log in
+mkdir -p ~/.ssh && chmod 700 ~/.ssh
+cat >> ~/.ssh/authorized_keys  # paste contents of parker-deploy.pub, then Ctrl-D
+chmod 600 ~/.ssh/authorized_keys
+
+# Repo + Docker without sudo (needed for update.sh)
+sudo chown -R "$USER:$USER" /opt/parker-birds
+sudo usermod -aG docker "$USER"
+# log out and back in (or newgrp docker) so the docker group applies
+
+# Smoke-test
+git -C /opt/parker-birds pull --ff-only
+docker compose -f /opt/parker-birds/docker-compose.yml ps
+bash /opt/parker-birds/deploy/update.sh
+```
+
+**3. GitHub secrets** on the fork (`Settings` → `Secrets and variables` → `Actions`):
+
+| Secret | Value |
+|---|---|
+| `EC2_HOST` | Instance public IP or DNS name |
+| `EC2_USER` | SSH user (e.g. `ubuntu`) |
+| `EC2_SSH_KEY` | Full private key from `parker-deploy` (including `BEGIN` / `END` lines) |
+
+Security group must allow inbound **22** from the internet (or at least from GitHub Actions IP ranges if you tighten that later).
+
+**4. Verify:** push to `shiny-ec2-dashboard`, open the repo **Actions** tab, and confirm the deploy job succeeds. On the host: `docker compose -f /opt/parker-birds/docker-compose.yml ps`.
+
 ## Updating data
 
 Optional Excel drop (legacy backfill only):
@@ -65,16 +106,19 @@ scp Parker.2026.08.xlsx ubuntu@YOUR_HOST:/opt/parker-birds/data/
 
 Then click **Reload data** in the UI.
 
-App updates:
+### App code updates
+
+Push to `shiny-ec2-dashboard` — GitHub Actions runs `deploy/update.sh` on the instance.
+
+Manual fallback (SSH):
 
 ```bash
-cd /opt/parker-birds
-sudo git pull
-sudo docker compose up -d --build
+bash /opt/parker-birds/deploy/update.sh
 ```
 
 Check archiver logs:
 
 ```bash
-sudo docker compose logs -f archiver
+cd /opt/parker-birds
+docker compose logs -f archiver
 ```
