@@ -13,4 +13,5 @@ Dockerfile
 docker-compose.yml
 data/cache/*
 !data/cache/.gitkeep
-scripts
+data/archive/*
+!data/archive/.gitkeep

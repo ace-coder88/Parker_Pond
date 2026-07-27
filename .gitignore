@@ -10,3 +10,7 @@ Parker_birds_files/
 # Runtime Haikubox API cache (written by the Shiny app)
 data/cache/*
 !data/cache/.gitkeep
+
+# Durable detection archive (written by the daily archiver)
+data/archive/*
+!data/archive/.gitkeep

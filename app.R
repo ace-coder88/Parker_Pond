@@ -4,18 +4,29 @@ library(readxl)
 library(ggplot2)
 library(httr2)
 library(jsonlite)
+library(DBI)
+library(RSQLite)
 
 source(file.path("R", "haikubox.R"))
 source(file.path("R", "sun.R"))
 source(file.path("R", "species_groups.R"))
+source(file.path("R", "archive.R"))
 
 data_dir <- Sys.getenv("PARKER_DATA_DIR", unset = "data")
 live_refresh_ms <- as.integer(Sys.getenv("HAIKUBOX_REFRESH_MS", unset = "600000"))
 
-load_birds <- function(dir = data_dir) {
+load_excel_birds <- function(dir = data_dir) {
   birdfiles <- list.files(dir, pattern = "\\.(xlsx|xls)$", full.names = TRUE)
   if (length(birdfiles) == 0) {
-    stop("No Excel files found in ", normalizePath(dir, mustWork = FALSE))
+    return(tibble(
+      Species = character(),
+      scientific_name = character(),
+      datetime = as.POSIXct(character()),
+      Count = numeric(),
+      Score = numeric(),
+      date_col = as.Date(character()),
+      time_col = numeric()
+    ))
   }
 
   birds <- bind_rows(lapply(birdfiles, read_excel))
@@ -35,6 +46,41 @@ load_birds <- function(dir = data_dir) {
       date_col = as.Date(datetime),
       time_col = as.numeric(format(datetime, "%H"))
     )
+}
+
+# Excel (legacy) + SQLite archive; prefer Excel on Species+datetime overlap (keeps Score).
+load_birds <- function(dir = data_dir) {
+  excel <- load_excel_birds(dir)
+  archived <- tryCatch(
+    read_archive(archive_path(dir), tz = haikubox_tz()),
+    error = function(e) {
+      warning("Failed to read archive: ", conditionMessage(e))
+      tibble(
+        Species = character(),
+        scientific_name = character(),
+        datetime = as.POSIXct(character()),
+        Count = numeric(),
+        Score = numeric(),
+        date_col = as.Date(character()),
+        time_col = numeric()
+      )
+    }
+  )
+
+  if (nrow(excel) == 0 && nrow(archived) == 0) {
+    stop(
+      "No bird data found. Add Excel files under ",
+      normalizePath(dir, mustWork = FALSE),
+      " or wait for the daily archiver to populate data/archive/detections.sqlite"
+    )
+  }
+
+  bind_rows(
+    excel %>% mutate(source = "excel"),
+    archived %>% mutate(source = "archive")
+  ) %>%
+    distinct(Species, datetime, .keep_all = TRUE) %>%
+    select(-source)
 }
 
 # Load Excel once at process start (not per browser session) to avoid memory spikes / OOM → 502
@@ -241,11 +287,11 @@ ui <- fluidPage(
       checkboxInput("reverse_palette", "Reverse palette", value = FALSE),
       checkboxInput("show_sun", "Show sunrise / sunset", value = TRUE),
       helpText("Sun curves use Mount Vernon, ME coordinates (override with HAIKUBOX_LAT / HAIKUBOX_LON)."),
-      actionButton("reload", "Reload Excel data", class = "btn-primary", width = "100%"),
+      actionButton("reload", "Reload data", class = "btn-primary", width = "100%"),
       br(), br(),
       actionButton("refresh_live", "Refresh live data", width = "100%"),
       br(), br(),
-      helpText("Live detections refresh automatically about every 10 minutes from the public Haikubox API (no account key).")
+      helpText("Live panel refreshes about every 10 minutes. A daily archiver saves the last 24h into SQLite so new months do not need Excel exports.")
     ),
     mainPanel(
       width = 9,
@@ -389,7 +435,7 @@ server <- function(input, output, session) {
 
   observeEvent(input$reload, {
     refresh_excel()
-    showNotification("Excel data reloaded", type = "message")
+    showNotification("Data reloaded (Excel + archive)", type = "message")
   })
 
   observeEvent(input$refresh_live, {
@@ -512,6 +558,17 @@ server <- function(input, output, session) {
       "Merged rows: ", format(nrow(birds), big.mark = ","), " / ",
       n_distinct(birds$Species), " species\n",
       "Live API detections: ", format(nrow(live_data()), big.mark = ","), "\n",
+      {
+        arch <- tryCatch(archive_summary(archive_path(data_dir)), error = function(e) list(n = 0L, date_min = NA, date_max = NA))
+        if (is.null(arch$n) || arch$n == 0) {
+          "Archive: empty (daily archiver not run yet)\n"
+        } else {
+          paste0(
+            "Archive: ", format(arch$n, big.mark = ","), " rows (",
+            as.character(arch$date_min), " to ", as.character(arch$date_max), ")\n"
+          )
+        }
+      },
       sync_line,
       err_line
     )

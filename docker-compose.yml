@@ -6,12 +6,28 @@ services:
       - "3838:3838"
     environment:
       PARKER_DATA_DIR: /app/data
+      PARKER_APP_ROOT: /app
       HAIKUBOX_SERIAL: "ECDA3B96F3AC"
       HAIKUBOX_TZ: America/New_York
       HAIKUBOX_LAT: "44.5012"
       HAIKUBOX_LON: "-69.9876"
       HAIKUBOX_REFRESH_MS: "600000"
     volumes:
-      # Excel history + writable API cache under data/cache/
+      # Excel history + writable API cache + SQLite archive
       - ./data:/app/data:rw
+    restart: unless-stopped
+
+  archiver:
+    image: parker-birds:latest
+    depends_on:
+      - parker-birds
+    environment:
+      PARKER_DATA_DIR: /app/data
+      PARKER_APP_ROOT: /app
+      HAIKUBOX_SERIAL: "ECDA3B96F3AC"
+      HAIKUBOX_TZ: America/New_York
+      HAIKUBOX_ARCHIVE_INTERVAL_SEC: "86400"
+    volumes:
+      - ./data:/app/data:rw
+    command: ["/app/scripts/archive_loop.sh"]
     restart: unless-stopped
