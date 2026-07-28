@@ -95,14 +95,13 @@ excel_birds_global <- tryCatch(
   }
 )
 
-ui <- tagList(
+ui <- fluidPage(
   tags$head(
     tags$style(HTML("
       body { background: #f7f5f2; }
-      .title-block { margin: 1rem 1rem 0.25rem; }
+      .title-block { margin: 1rem 0 0.75rem; }
       .title-block h1 { margin: 0; font-size: 1.8rem; }
       .title-block p { color: #555; margin: 0.35rem 0 0; }
-      .navbar { margin-bottom: 0.75rem; }
       .sidebar-panel { background: #fff; border: 1px solid #e6e1d9; border-radius: 8px; padding: 1rem; }
       .summary-box { background: #fff; border: 1px solid #e6e1d9; border-radius: 8px; padding: 0.85rem 1rem; margin-bottom: 1rem; }
       .summary-box h4 { margin-top: 0; }
@@ -110,16 +109,27 @@ ui <- tagList(
       .live-box h4 { margin-top: 0; }
       .species-group .shiny-options-group {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        column-gap: 0.75rem;
-        row-gap: 0.2rem;
-        align-items: start;
+        grid-template-columns: 1fr 1fr;
+        column-gap: 0.5rem;
+        row-gap: 0.15rem;
+        align-items: center;
       }
-      .species-group .radio { margin-top: 0 !important; margin-bottom: 0; }
+      .species-group .radio {
+        margin-top: 0 !important;
+        margin-bottom: 0 !important;
+        min-width: 0;
+      }
       .species-group .radio > label {
+        display: block;
         font-weight: normal;
-        padding-left: 1.35em;
+        padding-left: 1.4em;
+        margin-bottom: 0;
         white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .species-group .radio input[type='radio'] {
+        margin-left: -1.4em;
       }
     "))
   ),
@@ -136,13 +146,7 @@ ui <- tagList(
       )
     )
   ),
-  navbarPage(
-    title = NULL,
-    id = "pages",
-    windowTitle = "Parker Birds",
-    tabPanel("Sun graph", dashboard_ui("sun", sky = "sun")),
-    tabPanel("Moon graph", dashboard_ui("moon", sky = "moon"))
-  )
+  dashboard_ui("main")
 )
 
 server <- function(input, output, session) {
@@ -234,20 +238,7 @@ server <- function(input, output, session) {
   })
 
   dashboard_server(
-    "sun",
-    sky = "sun",
-    birds_data = birds_data,
-    excel_data = excel_data,
-    live_data = live_data,
-    live_meta = live_meta,
-    refresh_excel = refresh_excel,
-    refresh_live = refresh_live,
-    data_dir = data_dir
-  )
-
-  dashboard_server(
-    "moon",
-    sky = "moon",
+    "main",
     birds_data = birds_data,
     excel_data = excel_data,
     live_data = live_data,

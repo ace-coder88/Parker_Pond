@@ -1,18 +1,5 @@
-dashboard_ui <- function(id, sky = c("sun", "moon")) {
-  sky <- match.arg(sky)
+dashboard_ui <- function(id) {
   ns <- shiny::NS(id)
-
-  curve_checkbox <- if (identical(sky, "moon")) {
-    shiny::checkboxInput(ns("show_curves"), "Show full / new moons", value = TRUE)
-  } else {
-    shiny::checkboxInput(ns("show_curves"), "Show sunrise / sunset", value = TRUE)
-  }
-
-  curve_help <- if (identical(sky, "moon")) {
-    shiny::helpText("Dots mark full and new moons (local time of peak phase).")
-  } else {
-    shiny::helpText("Sun curves use Mount Vernon, ME coordinates (override with HAIKUBOX_LAT / HAIKUBOX_LON).")
-  }
 
   shiny::sidebarLayout(
     shiny::sidebarPanel(
@@ -55,6 +42,15 @@ dashboard_ui <- function(id, sky = c("sun", "moon")) {
       ),
       shiny::hr(),
       shiny::selectInput(
+        ns("plot_type"),
+        "Plot type",
+        choices = c(
+          "Hourly counts" = "hourly",
+          "Density" = "density"
+        ),
+        selected = "hourly"
+      ),
+      shiny::selectInput(
         ns("palette"),
         "Color palette",
         choices = c(
@@ -79,8 +75,9 @@ dashboard_ui <- function(id, sky = c("sun", "moon")) {
         ticks = FALSE
       ),
       shiny::checkboxInput(ns("reverse_palette"), "Reverse palette", value = FALSE),
-      curve_checkbox,
-      curve_help,
+      shiny::checkboxInput(ns("show_sun"), "Show sunrise / sunset", value = TRUE),
+      shiny::checkboxInput(ns("show_moon"), "Show full / new moons", value = TRUE),
+      shiny::helpText("Sun/moon overlays use Mount Vernon, ME coordinates (override with HAIKUBOX_LAT / HAIKUBOX_LON). Moon dots mark local peak phase."),
       shiny::actionButton(ns("reload"), "Reload data", class = "btn-primary", width = "100%"),
       shiny::br(), shiny::br(),
       shiny::actionButton(ns("refresh_live"), "Refresh live data", width = "100%"),
@@ -116,7 +113,6 @@ dashboard_ui <- function(id, sky = c("sun", "moon")) {
 
 dashboard_server <- function(
     id,
-    sky = c("sun", "moon"),
     birds_data,
     excel_data,
     live_data,
@@ -125,8 +121,6 @@ dashboard_server <- function(
     refresh_live,
     data_dir = Sys.getenv("PARKER_DATA_DIR", unset = "data")
 ) {
-  sky <- match.arg(sky)
-
   shiny::moduleServer(id, function(input, output, session) {
     available_species <- shiny::reactiveVal(character(0))
     syncing_species_group <- shiny::reactiveVal(FALSE)
@@ -242,7 +236,7 @@ dashboard_server <- function(
 
     heatmap_title <- shiny::reactive({
       group <- input$species_group
-      base <- if (is.null(group) || identical(group, "all")) {
+      if (is.null(group) || identical(group, "all")) {
         "All bird calls by date and hour"
       } else if (identical(group, "custom")) {
         n <- length(input$species)
@@ -255,12 +249,6 @@ dashboard_server <- function(
         }
       } else {
         paste0(species_group_label(group), " — calls by date and hour")
-      }
-
-      if (identical(sky, "moon")) {
-        paste0(base, " (moon)")
-      } else {
-        base
       }
     })
 
@@ -339,54 +327,67 @@ dashboard_server <- function(
 
     output$heatmap <- shiny::renderPlot({
       df <- filtered()
-      agg <- aggregate_heatmap(df)
-      curves <- NULL
-      rise_col <- NULL
-      set_col <- NULL
-      rise_label <- NULL
-      set_label <- NULL
-      curve_colors <- NULL
-      phase_marks <- NULL
-      phase_colors <- NULL
+      plot_type <- input$plot_type %||% "hourly"
+      use_density <- identical(plot_type, "density")
 
-      if (isTRUE(input$show_curves) && nrow(agg) > 0) {
-        if (identical(sky, "moon")) {
-          phase_marks <- moon_phase_marks_for_dates(
-            agg$date_col,
-            tz = haikubox_tz()
-          )
-          phase_colors <- c("Full moon" = "#FFF59D", "New moon" = "#B0BEC5")
-        } else {
+      date_vals <- if (nrow(df) > 0) {
+        unique(as.Date(df$datetime))
+      } else {
+        as.Date(character())
+      }
+
+      curves <- NULL
+      phase_marks <- NULL
+      show_sun <- isTRUE(input$show_sun)
+      show_moon <- isTRUE(input$show_moon)
+
+      if (length(date_vals) > 0) {
+        if (show_sun) {
           curves <- sun_curves_for_dates(
-            agg$date_col,
+            date_vals,
             lat = haikubox_lat(),
             lon = haikubox_lon(),
             tz = haikubox_tz()
           )
-          rise_col <- "sunrise_hour"
-          set_col <- "sunset_hour"
-          rise_label <- "Sunrise"
-          set_label <- "Sunset"
-          curve_colors <- c(Sunrise = "#FFE082", Sunset = "#80DEEA")
+        }
+        if (show_moon) {
+          phase_marks <- moon_phase_marks_for_dates(
+            date_vals,
+            tz = haikubox_tz()
+          )
         }
       }
 
-      plot_heatmap(
-        agg,
-        heatmap_title(),
+      overlay_args <- list(
+        show_curves = show_sun,
+        curves = curves,
+        rise_col = "sunrise_hour",
+        set_col = "sunset_hour",
+        rise_label = "Sunrise",
+        set_label = "Sunset",
+        curve_colors = c(Sunrise = "#FFE082", Sunset = "#80DEEA"),
+        phase_marks = phase_marks,
+        phase_colors = c("Full moon" = "#FFF59D", "New moon" = "#B0BEC5")
+      )
+
+      common <- list(
+        title = heatmap_title(),
         palette = input$palette %||% "magma",
         brightness = input$brightness %||% 0,
-        reverse = isTRUE(input$reverse_palette),
-        show_curves = isTRUE(input$show_curves) && identical(sky, "sun"),
-        curves = curves,
-        rise_col = rise_col,
-        set_col = set_col,
-        rise_label = rise_label,
-        set_label = set_label,
-        curve_colors = curve_colors,
-        phase_marks = if (isTRUE(input$show_curves) && identical(sky, "moon")) phase_marks else NULL,
-        phase_colors = phase_colors
+        reverse = isTRUE(input$reverse_palette)
       )
+
+      if (use_density) {
+        do.call(
+          plot_density_heatmap,
+          c(list(df = df), common, overlay_args)
+        )
+      } else {
+        do.call(
+          plot_heatmap,
+          c(list(agg = aggregate_heatmap(df)), common, overlay_args)
+        )
+      }
     })
 
     output$top_species <- shiny::renderTable({
