@@ -2,7 +2,7 @@
 # package compiles that often OOM small EC2 instances.
 FROM rocker/tidyverse:4.4.2
 
-RUN R -e 'install.packages(c("httr2", "RSQLite"), repos = "https://cloud.r-project.org")'
+RUN R -e 'install.packages(c("httr2", "RSQLite", "suncalc"), repos = "https://cloud.r-project.org")'
 
 WORKDIR /app
 

@@ -9,8 +9,11 @@ library(RSQLite)
 
 source(file.path("R", "haikubox.R"))
 source(file.path("R", "sun.R"))
+source(file.path("R", "moon.R"))
 source(file.path("R", "species_groups.R"))
 source(file.path("R", "archive.R"))
+source(file.path("R", "heatmap_plot.R"))
+source(file.path("R", "dashboard.R"))
 
 data_dir <- Sys.getenv("PARKER_DATA_DIR", unset = "data")
 live_refresh_ms <- as.integer(Sys.getenv("HAIKUBOX_REFRESH_MS", unset = "600000"))
@@ -83,110 +86,23 @@ load_birds <- function(dir = data_dir) {
     select(-source)
 }
 
-# Load Excel once at process start (not per browser session) to avoid memory spikes / OOM → 502
+# Load once at process start (not per browser session) to avoid memory spikes / OOM → 502
 excel_birds_global <- tryCatch(
   load_birds(data_dir),
   error = function(e) {
-    warning("Failed to load Excel at startup: ", conditionMessage(e))
+    warning("Failed to load bird data at startup: ", conditionMessage(e))
     NULL
   }
 )
 
-aggregate_heatmap <- function(df) {
-  if (nrow(df) == 0) {
-    return(tibble(date_col = as.Date(character()), time_col = numeric(), Count = numeric()))
-  }
-
-  date_min <- min(df$date_col)
-  date_max <- max(df$date_col)
-
-  df %>%
-    filter(!is.na(date_col), !is.na(time_col)) %>%
-    group_by(date_col, time_col) %>%
-    summarise(Count = sum(Count, na.rm = TRUE), .groups = "drop") %>%
-    complete(date_col = seq(date_min, date_max, by = "1 day"), time_col = 0:23, fill = list(Count = 0)) %>%
-    filter(!is.na(time_col))
-}
-
-plot_heatmap <- function(
-    agg,
-    title,
-    palette = "magma",
-    brightness = 0,
-    reverse = FALSE,
-    show_sun = TRUE,
-    sun_curves = NULL
-) {
-  if (nrow(agg) == 0) {
-    return(
-      ggplot() +
-        annotate("text", x = 0.5, y = 0.5, label = "No calls match the current filters") +
-        theme_void()
-    )
-  }
-
-  # brightness: -1 = darker (use deeper end of scale), +1 = brighter (crop dark end)
-  brightness <- max(-1, min(1, as.numeric(brightness)))
-  if (brightness >= 0) {
-    begin <- brightness * 0.45
-    end <- 1
-  } else {
-    begin <- 0
-    end <- 1 + brightness * 0.45
-  }
-
-  p <- ggplot(agg, aes(x = date_col, y = time_col, fill = Count)) +
-    geom_raster(interpolate = FALSE) +
-    scale_fill_viridis_c(
-      option = palette,
-      name = "# Calls",
-      begin = begin,
-      end = end,
-      direction = if (isTRUE(reverse)) -1 else 1
-    ) +
-    scale_x_date(date_breaks = "1 month", date_labels = "%b") +
-    scale_y_continuous(breaks = seq(0, 23, by = 3), limits = c(0, 23), expand = c(0, 0)) +
-    labs(y = "Time of Day", title = title) +
-    theme_minimal(base_size = 13) +
-    theme(
-      axis.title.x = element_blank(),
-      panel.grid = element_blank()
-    )
-
-  if (isTRUE(show_sun) && !is.null(sun_curves) && nrow(sun_curves) > 0) {
-    # Sunrise near bottom of y-axis (early hours); sunset near top (evening)
-    p <- p +
-      geom_line(
-        data = sun_curves,
-        aes(x = date, y = sunrise_hour, color = "Sunrise", group = 1),
-        inherit.aes = FALSE,
-        linewidth = 0.7,
-        alpha = 0.95
-      ) +
-      geom_line(
-        data = sun_curves,
-        aes(x = date, y = sunset_hour, color = "Sunset", group = 1),
-        inherit.aes = FALSE,
-        linewidth = 0.7,
-        alpha = 0.95
-      ) +
-      scale_color_manual(
-        name = NULL,
-        values = c(Sunrise = "#FFE082", Sunset = "#80DEEA")
-      ) +
-      guides(color = guide_legend(override.aes = list(linewidth = 1.2)))
-  }
-
-  p
-}
-
-ui <- fluidPage(
+ui <- tagList(
   tags$head(
     tags$style(HTML("
       body { background: #f7f5f2; }
-      .title-block { margin: 1rem 0 0.5rem; }
+      .title-block { margin: 1rem 1rem 0.25rem; }
       .title-block h1 { margin: 0; font-size: 1.8rem; }
       .title-block p { color: #555; margin: 0.35rem 0 0; }
+      .navbar { margin-bottom: 0.75rem; }
       .sidebar-panel { background: #fff; border: 1px solid #e6e1d9; border-radius: 8px; padding: 1rem; }
       .summary-box { background: #fff; border: 1px solid #e6e1d9; border-radius: 8px; padding: 0.85rem 1rem; margin-bottom: 1rem; }
       .summary-box h4 { margin-top: 0; }
@@ -220,103 +136,12 @@ ui <- fluidPage(
       )
     )
   ),
-  sidebarLayout(
-    sidebarPanel(
-      class = "sidebar-panel",
-      width = 3,
-      selectizeInput(
-        "species",
-        "Species",
-        choices = NULL,
-        multiple = TRUE,
-        options = list(placeholder = "Search species… (empty = all birds)")
-      ),
-      div(
-        class = "species-group",
-        radioButtons(
-          "species_group",
-          "Species group",
-          choices = species_group_choices,
-          selected = "all"
-        )
-      ),
-      helpText("Group radios fill the species box with matching names from the loaded data."),
-      dateRangeInput("date_range", "Date range"),
-      sliderInput(
-        "hour_range",
-        "Hour of day",
-        min = 0,
-        max = 23,
-        value = c(0, 23),
-        step = 1,
-        ticks = FALSE
-      ),
-      sliderInput(
-        "min_score",
-        "Minimum detection score",
-        min = 0,
-        max = 1,
-        value = 0,
-        step = 0.01
-      ),
-      hr(),
-      selectInput(
-        "palette",
-        "Color palette",
-        choices = c(
-          "Magma" = "magma",
-          "Inferno" = "inferno",
-          "Plasma" = "plasma",
-          "Viridis" = "viridis",
-          "Cividis" = "cividis",
-          "Rocket" = "rocket",
-          "Mako" = "mako",
-          "Turbo" = "turbo"
-        ),
-        selected = "magma"
-      ),
-      sliderInput(
-        "brightness",
-        "Brightness",
-        min = -1,
-        max = 1,
-        value = 0,
-        step = 0.05,
-        ticks = FALSE
-      ),
-      checkboxInput("reverse_palette", "Reverse palette", value = FALSE),
-      checkboxInput("show_sun", "Show sunrise / sunset", value = TRUE),
-      helpText("Sun curves use Mount Vernon, ME coordinates (override with HAIKUBOX_LAT / HAIKUBOX_LON)."),
-      actionButton("reload", "Reload data", class = "btn-primary", width = "100%"),
-      br(), br(),
-      actionButton("refresh_live", "Refresh live data", width = "100%"),
-      br(), br(),
-      helpText("Live panel refreshes about every 10 minutes. A daily archiver saves the last 24h into SQLite so new months do not need Excel exports.")
-    ),
-    mainPanel(
-      width = 9,
-      div(
-        class = "summary-box",
-        h4("Summary"),
-        verbatimTextOutput("summary", placeholder = TRUE)
-      ),
-      plotOutput("heatmap", height = "520px"),
-      fluidRow(
-        column(
-          width = 6,
-          h4("Top species in selection"),
-          tableOutput("top_species")
-        ),
-        column(
-          width = 6,
-          div(
-            class = "live-box",
-            h4("Live now (last 24h API)"),
-            tableOutput("live_now")
-          )
-        )
-      )
-    )
+  navbarPage(
+    title = NULL,
+    id = "pages",
+    windowTitle = "Parker Birds",
+    tabPanel("Sun graph", dashboard_ui("sun", sky = "sun")),
+    tabPanel("Moon graph", dashboard_ui("moon", sky = "moon"))
   )
 )
 
@@ -324,32 +149,11 @@ server <- function(input, output, session) {
   excel_data <- reactiveVal(excel_birds_global)
   live_data <- reactiveVal(empty_detections_df())
   live_meta <- reactiveVal(list(fetched_at = NA, source = "none", error = NULL))
-  available_species <- reactiveVal(character(0))
-  syncing_species_group <- reactiveVal(FALSE)
-
-  update_filters_from <- function(birds) {
-    if (is.null(birds) || nrow(birds) == 0) {
-      return(invisible(NULL))
-    }
-
-    species <- sort(unique(birds$Species))
-    available_species(species)
-    updateSelectizeInput(session, "species", choices = species, server = TRUE)
-
-    date_min <- min(birds$date_col)
-    date_max <- max(birds$date_col)
-    updateDateRangeInput(session, "date_range", start = date_min, end = date_max, min = date_min, max = date_max)
-
-    score_max <- suppressWarnings(max(birds$Score, na.rm = TRUE))
-    if (!is.finite(score_max) || score_max <= 0) score_max <- 1
-    updateSliderInput(session, "min_score", max = score_max, value = isolate(input$min_score) %||% 0)
-  }
 
   refresh_excel <- function() {
     birds <- load_birds()
     excel_birds_global <<- birds
     excel_data(birds)
-    update_filters_from(merge_excel_and_live(birds, live_data()))
   }
 
   refresh_live <- function(notify = FALSE, network = TRUE) {
@@ -399,12 +203,8 @@ server <- function(input, output, session) {
     merge_excel_and_live(excel, live_data())
   })
 
-  # Seed session from in-memory Excel + disk cache (no per-session Excel reload)
+  # Seed session from in-memory data + disk cache (no per-session reload)
   observe({
-    excel <- excel_data()
-    if (!is.null(excel)) {
-      update_filters_from(excel)
-    }
     refresh_live(notify = FALSE, network = FALSE)
   })
 
@@ -433,202 +233,29 @@ server <- function(input, output, session) {
     )
   })
 
-  observeEvent(input$reload, {
-    refresh_excel()
-    showNotification("Data reloaded (Excel + archive)", type = "message")
-  })
+  dashboard_server(
+    "sun",
+    sky = "sun",
+    birds_data = birds_data,
+    excel_data = excel_data,
+    live_data = live_data,
+    live_meta = live_meta,
+    refresh_excel = refresh_excel,
+    refresh_live = refresh_live,
+    data_dir = data_dir
+  )
 
-  observeEvent(input$refresh_live, {
-    refresh_live(notify = TRUE, network = TRUE)
-  })
-
-  observeEvent(input$species_group, {
-    group <- input$species_group
-    if (identical(group, "custom")) {
-      return()
-    }
-
-    selected <- if (identical(group, "all")) {
-      character(0)
-    } else {
-      match_species_group(available_species(), group)
-    }
-
-    syncing_species_group(TRUE)
-    updateSelectizeInput(
-      session,
-      "species",
-      choices = available_species(),
-      selected = selected,
-      server = TRUE
-    )
-  }, ignoreInit = TRUE)
-
-  observeEvent(input$species, {
-    if (isTRUE(syncing_species_group())) {
-      syncing_species_group(FALSE)
-      return()
-    }
-
-    inferred <- infer_species_group(input$species, available_species())
-    if (!identical(isolate(input$species_group), inferred)) {
-      updateRadioButtons(session, "species_group", selected = inferred)
-    }
-  }, ignoreNULL = FALSE)
-
-  filtered <- reactive({
-    birds <- birds_data()
-    req(birds)
-
-    out <- birds
-
-    if (!is.null(input$species) && length(input$species) > 0) {
-      out <- out %>% filter(Species %in% input$species)
-    }
-
-    if (!is.null(input$date_range) && length(input$date_range) == 2 &&
-        !any(is.na(input$date_range))) {
-      out <- out %>%
-        filter(date_col >= input$date_range[1], date_col <= input$date_range[2])
-    }
-
-    hours <- input$hour_range
-    if (!is.null(hours) && length(hours) == 2) {
-      out <- out %>% filter(time_col >= hours[1], time_col <= hours[2])
-    }
-
-    if (!is.null(input$min_score) && input$min_score > 0) {
-      # Keep API rows (Score NA) so live detections still appear when filtering scores
-      out <- out %>% filter(is.na(Score) | Score >= input$min_score)
-    }
-
-    out
-  })
-
-  heatmap_title <- reactive({
-    group <- input$species_group
-    if (is.null(group) || identical(group, "all")) {
-      "All bird calls by date and hour"
-    } else if (identical(group, "custom")) {
-      n <- length(input$species)
-      if (n == 0) {
-        "All bird calls by date and hour"
-      } else if (n == 1) {
-        paste0(input$species[[1]], " calls by date and hour")
-      } else {
-        paste0(n, " selected species — calls by date and hour")
-      }
-    } else {
-      paste0(species_group_label(group), " — calls by date and hour")
-    }
-  })
-
-  output$summary <- renderText({
-    df <- filtered()
-    birds <- birds_data()
-    meta <- live_meta()
-    req(birds)
-
-    sync_line <- if (is.na(meta$fetched_at)) {
-      "Last API sync: never"
-    } else {
-      paste0(
-        "Last API sync: ", format(meta$fetched_at, "%Y-%m-%d %H:%M:%S %Z"),
-        " (", meta$source, ")"
-      )
-    }
-
-    err_line <- if (!is.null(meta$error) && identical(meta$source, "cache")) {
-      paste0("\nAPI note: ", meta$error, " (using cache)")
-    } else if (!is.null(meta$error) && identical(meta$source, "none")) {
-      paste0("\nAPI note: ", meta$error)
-    } else {
-      ""
-    }
-
-    if (nrow(df) == 0) {
-      return(paste0("No rows match the current filters.\n", sync_line, err_line))
-    }
-
-    paste0(
-      "Calls in selection: ", format(sum(df$Count, na.rm = TRUE), big.mark = ","), "\n",
-      "Detections (rows): ", format(nrow(df), big.mark = ","), "\n",
-      "Species: ", n_distinct(df$Species), "\n",
-      "Date span: ", as.character(min(df$date_col)), " to ", as.character(max(df$date_col)), "\n",
-      "Merged rows: ", format(nrow(birds), big.mark = ","), " / ",
-      n_distinct(birds$Species), " species\n",
-      "Live API detections: ", format(nrow(live_data()), big.mark = ","), "\n",
-      {
-        arch <- tryCatch(archive_summary(archive_path(data_dir)), error = function(e) list(n = 0L, date_min = NA, date_max = NA))
-        if (is.null(arch$n) || arch$n == 0) {
-          "Archive: empty (daily archiver not run yet)\n"
-        } else {
-          paste0(
-            "Archive: ", format(arch$n, big.mark = ","), " rows (",
-            as.character(arch$date_min), " to ", as.character(arch$date_max), ")\n"
-          )
-        }
-      },
-      sync_line,
-      err_line
-    )
-  })
-
-  output$live_now <- renderTable({
-    live <- live_data()
-    if (nrow(live) == 0) {
-      return(tibble(Species = character(), Local_time = character(), Audio = character()))
-    }
-
-    live %>%
-      slice_head(n = 20) %>%
-      transmute(
-        Species,
-        Local_time = format(datetime, "%Y-%m-%d %H:%M:%S"),
-        Audio = ifelse(
-          !is.na(wav) & nzchar(wav),
-          paste0("<a href=\"", wav, "\" target=\"_blank\" rel=\"noopener noreferrer\">listen</a>"),
-          ""
-        )
-      )
-  }, sanitize.text.function = identity, striped = TRUE, hover = TRUE, bordered = TRUE)
-
-  output$heatmap <- renderPlot({
-    df <- filtered()
-    agg <- aggregate_heatmap(df)
-    sun <- NULL
-    if (isTRUE(input$show_sun) && nrow(agg) > 0) {
-      sun <- sun_curves_for_dates(
-        agg$date_col,
-        lat = haikubox_lat(),
-        lon = haikubox_lon(),
-        tz = haikubox_tz()
-      )
-    }
-    plot_heatmap(
-      agg,
-      heatmap_title(),
-      palette = input$palette %||% "magma",
-      brightness = input$brightness %||% 0,
-      reverse = isTRUE(input$reverse_palette),
-      show_sun = isTRUE(input$show_sun),
-      sun_curves = sun
-    )
-  })
-
-  output$top_species <- renderTable({
-    df <- filtered()
-    if (nrow(df) == 0) {
-      return(tibble(Species = character(), Calls = numeric()))
-    }
-
-    df %>%
-      group_by(Species) %>%
-      summarise(Calls = sum(Count, na.rm = TRUE), .groups = "drop") %>%
-      arrange(desc(Calls)) %>%
-      slice_head(n = 15) %>%
-      mutate(Calls = format(Calls, big.mark = ","))
-  }, striped = TRUE, hover = TRUE, bordered = TRUE)
+  dashboard_server(
+    "moon",
+    sky = "moon",
+    birds_data = birds_data,
+    excel_data = excel_data,
+    live_data = live_data,
+    live_meta = live_meta,
+    refresh_excel = refresh_excel,
+    refresh_live = refresh_live,
+    data_dir = data_dir
+  )
 }
 
 shinyApp(ui, server)
