@@ -108,6 +108,25 @@ aggregate_heatmap <- function(df) {
     filter(!is.na(time_col))
 }
 
+# Choose x-axis date breaks/labels from the visible span.
+# Monthly breaks on <1 month of data can confuse ggplot's date guide.
+heatmap_date_scale <- function(dates) {
+  dates <- as.Date(dates)
+  dates <- dates[!is.na(dates)]
+  if (length(dates) == 0) {
+    return(scale_x_date())
+  }
+
+  span_days <- as.integer(max(dates) - min(dates)) + 1L
+  if (span_days <= 14L) {
+    scale_x_date(date_breaks = "1 day", date_labels = "%b %d")
+  } else if (span_days <= 90L) {
+    scale_x_date(date_breaks = "1 week", date_labels = "%b %d")
+  } else {
+    scale_x_date(date_breaks = "1 month", date_labels = "%b")
+  }
+}
+
 plot_heatmap <- function(
     agg,
     title,
@@ -135,6 +154,8 @@ plot_heatmap <- function(
     end <- 1 + brightness * 0.45
   }
 
+  # geom_raster cells are centered on integers; pad half a cell so hours 0 and 23
+  # are not treated as outside limits = c(0, 23).
   p <- ggplot(agg, aes(x = date_col, y = time_col, fill = Count)) +
     geom_raster(interpolate = FALSE) +
     scale_fill_viridis_c(
@@ -144,8 +165,12 @@ plot_heatmap <- function(
       end = end,
       direction = if (isTRUE(reverse)) -1 else 1
     ) +
-    scale_x_date(date_breaks = "1 month", date_labels = "%b") +
-    scale_y_continuous(breaks = seq(0, 23, by = 3), limits = c(0, 23), expand = c(0, 0)) +
+    heatmap_date_scale(agg$date_col) +
+    scale_y_continuous(
+      breaks = seq(0, 23, by = 3),
+      limits = c(-0.5, 23.5),
+      expand = c(0, 0)
+    ) +
     labs(y = "Time of Day", title = title) +
     theme_minimal(base_size = 13) +
     theme(
@@ -155,26 +180,34 @@ plot_heatmap <- function(
 
   if (isTRUE(show_sun) && !is.null(sun_curves) && nrow(sun_curves) > 0) {
     # Sunrise near bottom of y-axis (early hours); sunset near top (evening)
+    sun_aes_rise <- aes(x = date, y = sunrise_hour, color = "Sunrise", group = 1)
+    sun_aes_set <- aes(x = date, y = sunset_hour, color = "Sunset", group = 1)
+    if (nrow(sun_curves) >= 2L) {
+      p <- p +
+        geom_line(
+          data = sun_curves, mapping = sun_aes_rise,
+          inherit.aes = FALSE, linewidth = 0.7, alpha = 0.95
+        ) +
+        geom_line(
+          data = sun_curves, mapping = sun_aes_set,
+          inherit.aes = FALSE, linewidth = 0.7, alpha = 0.95
+        )
+    } else {
+      p <- p +
+        geom_point(
+          data = sun_curves, mapping = sun_aes_rise,
+          inherit.aes = FALSE, size = 2, alpha = 0.95
+        ) +
+        geom_point(
+          data = sun_curves, mapping = sun_aes_set,
+          inherit.aes = FALSE, size = 2, alpha = 0.95
+        )
+    }
     p <- p +
-      geom_line(
-        data = sun_curves,
-        aes(x = date, y = sunrise_hour, color = "Sunrise", group = 1),
-        inherit.aes = FALSE,
-        linewidth = 0.7,
-        alpha = 0.95
-      ) +
-      geom_line(
-        data = sun_curves,
-        aes(x = date, y = sunset_hour, color = "Sunset", group = 1),
-        inherit.aes = FALSE,
-        linewidth = 0.7,
-        alpha = 0.95
-      ) +
       scale_color_manual(
         name = NULL,
         values = c(Sunrise = "#FFE082", Sunset = "#80DEEA")
-      ) +
-      guides(color = guide_legend(override.aes = list(linewidth = 1.2)))
+      )
   }
 
   p
