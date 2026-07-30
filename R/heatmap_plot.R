@@ -45,6 +45,25 @@ decimal_hour_of_day <- function(datetime) {
     ggplot2::theme_void()
 }
 
+# Choose x-axis date breaks/labels from the visible span.
+# Monthly breaks on <1 month of data can confuse ggplot's date guide.
+heatmap_date_scale <- function(dates) {
+  dates <- as.Date(dates)
+  dates <- dates[!is.na(dates)]
+  if (length(dates) == 0) {
+    return(ggplot2::scale_x_date())
+  }
+
+  span_days <- as.integer(max(dates) - min(dates)) + 1L
+  if (span_days <= 14L) {
+    ggplot2::scale_x_date(date_breaks = "1 day", date_labels = "%b %d")
+  } else if (span_days <= 90L) {
+    ggplot2::scale_x_date(date_breaks = "1 week", date_labels = "%b %d")
+  } else {
+    ggplot2::scale_x_date(date_breaks = "1 month", date_labels = "%b")
+  }
+}
+
 # Break line segments when time-of-day wraps (e.g. moonrise jumping 23:00 → 00:30).
 .curve_segments <- function(df, max_jump_hours = 6) {
   if (nrow(df) == 0) {
@@ -119,14 +138,26 @@ decimal_hour_of_day <- function(datetime) {
     curve_long <- .curve_segments(curve_long)
 
     if (nrow(curve_long) > 0) {
-      p <- p +
-        ggplot2::geom_line(
-          data = curve_long,
-          ggplot2::aes(x = date, y = hour, color = series, group = interaction(series, segment)),
-          inherit.aes = FALSE,
-          linewidth = 0.7,
-          alpha = 0.95
-        )
+      n_dates <- dplyr::n_distinct(curve_long$date)
+      if (n_dates >= 2L) {
+        p <- p +
+          ggplot2::geom_line(
+            data = curve_long,
+            ggplot2::aes(x = date, y = hour, color = series, group = interaction(series, segment)),
+            inherit.aes = FALSE,
+            linewidth = 0.7,
+            alpha = 0.95
+          )
+      } else {
+        p <- p +
+          ggplot2::geom_point(
+            data = curve_long,
+            ggplot2::aes(x = date, y = hour, color = series),
+            inherit.aes = FALSE,
+            size = 2,
+            alpha = 0.95
+          )
+      }
       color_values <- c(color_values, curve_colors)
     } else {
       has_curves <- FALSE
@@ -208,6 +239,8 @@ plot_heatmap <- function(
 
   be <- .palette_begin_end(brightness)
 
+  # geom_raster cells are centered on integers; pad half a cell so hours 0 and 23
+  # are not treated as outside limits = c(0, 23).
   p <- ggplot2::ggplot(agg, ggplot2::aes(x = date_col, y = time_col, fill = Count)) +
     ggplot2::geom_raster(interpolate = FALSE) +
     ggplot2::scale_fill_viridis_c(
@@ -217,8 +250,12 @@ plot_heatmap <- function(
       end = be$end,
       direction = if (isTRUE(reverse)) -1 else 1
     ) +
-    ggplot2::scale_x_date(date_breaks = "1 month", date_labels = "%b") +
-    ggplot2::scale_y_continuous(breaks = seq(0, 23, by = 3), limits = c(0, 23), expand = c(0, 0)) +
+    heatmap_date_scale(agg$date_col) +
+    ggplot2::scale_y_continuous(
+      breaks = seq(0, 23, by = 3),
+      limits = c(-0.5, 23.5),
+      expand = c(0, 0)
+    ) +
     ggplot2::labs(y = "Time of Day", title = title) +
     ggplot2::theme_minimal(base_size = 13) +
     ggplot2::theme(

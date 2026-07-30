@@ -67,10 +67,19 @@ sun_curves_for_dates <- function(
 
   sunrise_min <- vapply(dates, .sun_event_minutes, numeric(1), lat = lat, lon = lon, tz = tz, rise = TRUE)
   sunset_min <- vapply(dates, .sun_event_minutes, numeric(1), lat = lat, lon = lon, tz = tz, rise = FALSE)
+  sunrise_hour <- as.numeric(sunrise_min) / 60
+  sunset_hour <- as.numeric(sunset_min) / 60
+  if (length(sunrise_hour) != length(dates) || length(sunset_hour) != length(dates)) {
+    stop(
+      "sun curve length mismatch: dates=", length(dates),
+      " sunrise=", length(sunrise_hour),
+      " sunset=", length(sunset_hour)
+    )
+  }
 
   tibble::tibble(
     date = dates,
-    sunrise_hour = pmax(0, pmin(23.99, sunrise_min / 60)),
-    sunset_hour = pmax(0, pmin(23.99, sunset_min / 60))
+    sunrise_hour = pmax(0, pmin(23.99, sunrise_hour)),
+    sunset_hour = pmax(0, pmin(23.99, sunset_hour))
   )
 }
