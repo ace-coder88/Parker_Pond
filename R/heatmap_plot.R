@@ -173,20 +173,32 @@ heatmap_date_scale <- function(dates) {
         size = 3.2,
         stroke = 0.8
       )
-    color_values <- c(color_values, phase_colors)
+    # Only include colors for phases actually present — otherwise
+    # guide_legend(override.aes=...) length mismatches ("replacement has 4 rows, data has 3").
+    present_phases <- unique(as.character(phase_marks$series))
+    present_phases <- present_phases[present_phases %in% names(phase_colors)]
+    color_values <- c(color_values, phase_colors[present_phases])
   }
 
   if (length(color_values) > 0) {
     # Drop duplicate names if any; keep first
     color_values <- color_values[!duplicated(names(color_values))]
-    p <- p + ggplot2::scale_color_manual(name = NULL, values = color_values)
+    p <- p + ggplot2::scale_color_manual(
+      name = NULL,
+      values = color_values,
+      breaks = names(color_values)
+    )
   }
 
   if (has_phases) {
+    present_phases <- unique(as.character(phase_marks$series))
+    shape_values <- c("Full moon" = 16, "New moon" = 1)
+    shape_values <- shape_values[names(shape_values) %in% present_phases]
     p <- p +
       ggplot2::scale_shape_manual(
         name = NULL,
-        values = c("Full moon" = 16, "New moon" = 1)
+        values = shape_values,
+        breaks = names(shape_values)
       )
   }
 
