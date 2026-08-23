@@ -14,3 +14,7 @@ data/cache/*
 # Durable detection archive (written by the daily archiver)
 data/archive/*
 !data/archive/.gitkeep
+
+# User-uploaded Haikubox CSV/Excel exports (via dashboard Upload)
+data/uploads/*
+!data/uploads/.gitkeep

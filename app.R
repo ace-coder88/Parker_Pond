@@ -12,6 +12,7 @@ source(file.path("R", "sun.R"))
 source(file.path("R", "moon.R"))
 source(file.path("R", "species_groups.R"))
 source(file.path("R", "archive.R"))
+source(file.path("R", "import_export.R"))
 source(file.path("R", "heatmap_plot.R"))
 source(file.path("R", "dashboard.R"))
 
@@ -21,15 +22,7 @@ live_refresh_ms <- as.integer(Sys.getenv("HAIKUBOX_REFRESH_MS", unset = "600000"
 load_excel_birds <- function(dir = data_dir) {
   birdfiles <- list.files(dir, pattern = "\\.(xlsx|xls)$", full.names = TRUE)
   if (length(birdfiles) == 0) {
-    return(tibble(
-      Species = character(),
-      scientific_name = character(),
-      datetime = as.POSIXct(character()),
-      Count = numeric(),
-      Score = numeric(),
-      date_col = as.Date(character()),
-      time_col = numeric()
-    ))
+    return(empty_birds_df())
   }
 
   birds <- bind_rows(lapply(birdfiles, read_excel))
@@ -51,35 +44,36 @@ load_excel_birds <- function(dir = data_dir) {
     )
 }
 
-# Excel (legacy) + SQLite archive; prefer Excel on Species+datetime overlap (keeps Score).
+# Excel (legacy) + uploads + SQLite archive.
+# Prefer Excel, then uploads, then archive on Species+datetime overlap.
 load_birds <- function(dir = data_dir) {
   excel <- load_excel_birds(dir)
+  uploads <- tryCatch(
+    load_upload_birds(dir, tz = haikubox_tz()),
+    error = function(e) {
+      warning("Failed to read uploads: ", conditionMessage(e))
+      empty_birds_df()
+    }
+  )
   archived <- tryCatch(
     read_archive(archive_path(dir), tz = haikubox_tz()),
     error = function(e) {
       warning("Failed to read archive: ", conditionMessage(e))
-      tibble(
-        Species = character(),
-        scientific_name = character(),
-        datetime = as.POSIXct(character()),
-        Count = numeric(),
-        Score = numeric(),
-        date_col = as.Date(character()),
-        time_col = numeric()
-      )
+      empty_birds_df()
     }
   )
 
-  if (nrow(excel) == 0 && nrow(archived) == 0) {
+  if (nrow(excel) == 0 && nrow(uploads) == 0 && nrow(archived) == 0) {
     stop(
       "No bird data found. Add Excel files under ",
       normalizePath(dir, mustWork = FALSE),
-      " or wait for the daily archiver to populate data/archive/detections.sqlite"
+      ", upload a Haikubox CSV, or wait for the daily archiver."
     )
   }
 
   bind_rows(
     excel %>% mutate(source = "excel"),
+    uploads %>% mutate(source = "upload"),
     archived %>% mutate(source = "archive")
   ) %>%
     distinct(Species, datetime, .keep_all = TRUE) %>%

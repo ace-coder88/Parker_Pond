@@ -98,13 +98,14 @@ Security group must allow inbound **22** from the internet (or at least from Git
 
 ## Updating data
 
-Optional Excel drop (legacy backfill only):
+Optional Excel/CSV drop (full detection exports from listen.haikubox.com):
 
 ```bash
 scp Parker.2026.08.xlsx ubuntu@YOUR_HOST:/opt/parker-birds/data/
+# or upload via the dashboard "Upload Haikubox CSV / Excel" control (saves under data/uploads/)
 ```
 
-Then click **Reload data** in the UI.
+Then click **Reload data** in the UI (uploads trigger a reload automatically).
 
 ### App code updates
 

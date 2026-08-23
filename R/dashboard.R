@@ -80,9 +80,33 @@ dashboard_ui <- function(id) {
       shiny::helpText("Sun/moon overlays use Mount Vernon, ME coordinates (override with HAIKUBOX_LAT / HAIKUBOX_LON). Moon dots mark local peak phase."),
       shiny::actionButton(ns("reload"), "Reload data", class = "btn-primary", width = "100%"),
       shiny::br(), shiny::br(),
+      shiny::fileInput(
+        ns("upload_export"),
+        "Upload Haikubox CSV / Excel",
+        multiple = FALSE,
+        accept = c(
+          ".csv",
+          ".txt",
+          ".xlsx",
+          ".xls",
+          "text/csv",
+          "text/plain",
+          "application/vnd.ms-excel",
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        width = "100%"
+      ),
+      shiny::helpText(
+        "Download individual detections from listen.haikubox.com (All → Download CSV), ",
+        "then upload here. Files are saved under data/uploads/ and preferred over the API sample archive."
+      ),
+      shiny::br(),
       shiny::actionButton(ns("refresh_live"), "Refresh live data", width = "100%"),
       shiny::br(), shiny::br(),
-      shiny::helpText("Live panel refreshes about every 10 minutes. A daily archiver saves the last 24h into SQLite so new months do not need Excel exports.")
+      shiny::helpText(
+        "Live panel refreshes about every 10 minutes. The daily archiver only stores an API sample; ",
+        "upload CSV exports for full hour-level history."
+      )
     ),
     shiny::mainPanel(
       width = 9,
@@ -165,7 +189,43 @@ dashboard_server <- function(
 
     shiny::observeEvent(input$reload, {
       refresh_excel()
-      shiny::showNotification("Data reloaded (Excel + archive)", type = "message")
+      shiny::showNotification("Data reloaded (Excel + uploads + archive)", type = "message")
+    })
+
+    shiny::observeEvent(input$upload_export, {
+      f <- input$upload_export
+      shiny::req(f)
+      shiny::req(f$datapath)
+
+      result <- tryCatch(
+        save_haikubox_upload(
+          src_path = f$datapath,
+          original_name = f$name,
+          data_dir = data_dir,
+          tz = haikubox_tz()
+        ),
+        error = function(e) e
+      )
+
+      if (inherits(result, "error") || inherits(result, "condition")) {
+        shiny::showNotification(
+          paste("Upload failed:", conditionMessage(result)),
+          type = "error",
+          duration = 12
+        )
+        return()
+      }
+
+      refresh_excel()
+      shiny::showNotification(
+        paste0(
+          "Uploaded ", format(result$n, big.mark = ","), " detections (",
+          result$species, " species, ",
+          as.character(result$date_min), " to ", as.character(result$date_max), ")"
+        ),
+        type = "message",
+        duration = 10
+      )
     })
 
     shiny::observeEvent(input$refresh_live, {
@@ -287,23 +347,35 @@ dashboard_server <- function(
         "Merged rows: ", format(nrow(birds), big.mark = ","), " / ",
         dplyr::n_distinct(birds$Species), " species\n",
         "Live API detections: ", format(nrow(live_data()), big.mark = ","), "\n",
-        {
-          arch <- tryCatch(
-            archive_summary(archive_path(data_dir)),
-            error = function(e) list(n = 0L, date_min = NA, date_max = NA)
+      {
+        n_uploads <- length(list.files(
+          uploads_dir(data_dir),
+          pattern = "\\.(csv|txt|xlsx|xls)$",
+          ignore.case = TRUE
+        ))
+        if (n_uploads > 0) {
+          paste0("Uploaded export files: ", n_uploads, "\n")
+        } else {
+          "Uploaded export files: none\n"
+        }
+      },
+      {
+        arch <- tryCatch(
+          archive_summary(archive_path(data_dir)),
+          error = function(e) list(n = 0L, date_min = NA, date_max = NA)
+        )
+        if (is.null(arch$n) || arch$n == 0) {
+          "Archive: empty (daily archiver not run yet)\n"
+        } else {
+          paste0(
+            "Archive: ", format(arch$n, big.mark = ","), " rows (",
+            as.character(arch$date_min), " to ", as.character(arch$date_max), ")\n"
           )
-          if (is.null(arch$n) || arch$n == 0) {
-            "Archive: empty (daily archiver not run yet)\n"
-          } else {
-            paste0(
-              "Archive: ", format(arch$n, big.mark = ","), " rows (",
-              as.character(arch$date_min), " to ", as.character(arch$date_max), ")\n"
-            )
-          }
-        },
-        sync_line,
-        err_line
-      )
+        }
+      },
+      sync_line,
+      err_line
+    )
     })
 
     output$live_now <- shiny::renderTable({
